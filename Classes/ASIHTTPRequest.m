@@ -63,8 +63,8 @@ static NSError *ASIAuthenticationError;
 static NSError *ASIUnableToCreateRequestError;
 static NSError *ASITooMuchRedirectionError;
 
-static NSMutableArray *bandwidthUsageTracker = nil;
-static unsigned long averageBandwidthUsedPerSecond = 0;
+static NSMutableArray *globalBandwidthUsageTracker = nil;
+static unsigned long globalAverageBandwidthUsedPerSecond = 0;
 
 // These are used for queuing persistent connections on the same connection
 
@@ -83,16 +83,16 @@ static NSRecursiveLock *connectionsLock = nil;
 static unsigned int nextRequestID = 0;
 
 // Records how much bandwidth all requests combined have used in the last second
-static unsigned long bandwidthUsedInLastSecond = 0; 
+static unsigned long globalBandwidthUsedInLastSecond = 0;
 
 // A date one second in the future from the time it was created
-static NSDate *bandwidthMeasurementDate = nil;
+static NSDate *globalBandwidthMeasurementDate = nil;
 
 // Since throttling variables are shared among all requests, we'll use a lock to mediate access
-static NSLock *bandwidthThrottlingLock = nil;
+static NSLock *globalBandwidthThrottlingLock = nil;
 
 // the maximum number of bytes that can be transmitted in one second
-static unsigned long maxBandwidthPerSecond = 0;
+static unsigned long globalMaxBandwidthPerSecond = 0;
 
 // A default figure for throttling bandwidth on mobile devices
 unsigned long const ASIWWANBandwidthThrottleAmount = 14800;
@@ -101,11 +101,11 @@ unsigned long const ASIWWANBandwidthThrottleAmount = 14800;
 // YES when bandwidth throttling is active
 // This flag does not denote whether throttling is turned on - rather whether it is currently in use
 // It will be set to NO when throttling was turned on with setShouldThrottleBandwidthForWWAN, but a WI-FI connection is active
-static BOOL isBandwidthThrottled = NO;
+static BOOL isGlobalBandwidthThrottled = NO;
 
 // When YES, bandwidth will be automatically throttled when using WWAN (3G/Edge/GPRS)
 // Wifi will not be throttled
-static BOOL shouldThrottleBandwidthForWWANOnly = NO;
+static BOOL shouldGlobalThrottleBandwidthForWWANOnly = NO;
 #endif
 
 // Mediates access to the session cookies so requests
@@ -119,7 +119,7 @@ static NSRecursiveLock *sessionCookiesLock = nil;
 static NSRecursiveLock *delegateAuthenticationLock = nil;
 
 // When throttling bandwidth, Set to a date in future that we will allow all requests to wake up and reschedule their streams
-static NSDate *throttleWakeUpTime = nil;
+static NSDate *globalThrottleWakeUpTime = nil;
 
 static id <ASICacheDelegate> defaultCache = nil;
 
@@ -152,8 +152,8 @@ static NSOperationQueue *sharedQueue = nil;
 - (void)askDelegateForCredentials;
 - (void)failAuthentication;
 
-+ (void)measureBandwidthUsage;
-+ (void)recordBandwidthUsage;
++ (void)measureGlobalBandwidthUsage;
++ (void)recordGlobalBandwidthUsage;
 
 - (void)startRequest;
 - (void)updateStatus:(NSTimer *)timer;
@@ -259,11 +259,11 @@ static NSOperationQueue *sharedQueue = nil;
 		persistentConnectionsPool = [[NSMutableArray alloc] init];
 		connectionsLock = [[NSRecursiveLock alloc] init];
 		progressLock = [[NSRecursiveLock alloc] init];
-		bandwidthThrottlingLock = [[NSLock alloc] init];
+		globalBandwidthThrottlingLock = [[NSLock alloc] init];
 		sessionCookiesLock = [[NSRecursiveLock alloc] init];
 		sessionCredentialsLock = [[NSRecursiveLock alloc] init];
 		delegateAuthenticationLock = [[NSRecursiveLock alloc] init];
-		bandwidthUsageTracker = [[NSMutableArray alloc] initWithCapacity:5];
+		globalBandwidthUsageTracker = [[NSMutableArray alloc] initWithCapacity:5];
 		ASIRequestTimedOutError = [[NSError alloc] initWithDomain:NetworkRequestErrorDomain code:ASIRequestTimedOutErrorType userInfo:[NSDictionary dictionaryWithObjectsAndKeys:@"The request timed out",NSLocalizedDescriptionKey,nil]];  
 		ASIAuthenticationError = [[NSError alloc] initWithDomain:NetworkRequestErrorDomain code:ASIAuthenticationErrorType userInfo:[NSDictionary dictionaryWithObjectsAndKeys:@"Authentication needed",NSLocalizedDescriptionKey,nil]];
 		ASIRequestCancelledError = [[NSError alloc] initWithDomain:NetworkRequestErrorDomain code:ASIRequestCancelledErrorType userInfo:[NSDictionary dictionaryWithObjectsAndKeys:@"The request was cancelled",NSLocalizedDescriptionKey,nil]];
@@ -1378,7 +1378,7 @@ static NSOperationQueue *sharedQueue = nil;
 	[connectionsLock unlock];
 
 	// Schedule the stream
-	if (![self readStreamIsScheduled] && (!throttleWakeUpTime || [throttleWakeUpTime timeIntervalSinceDate:[NSDate date]] < 0)) {
+	if (![self readStreamIsScheduled] && (!globalThrottleWakeUpTime || [globalThrottleWakeUpTime timeIntervalSinceDate:[NSDate date]] < 0)) {
 		[self scheduleReadStream];
 	}
 	
@@ -1544,7 +1544,7 @@ static NSOperationQueue *sharedQueue = nil;
 				
 				// We've uploaded more data,  reset the timeout
 				[self setLastActivityTime:[NSDate date]];
-				[ASIHTTPRequest incrementBandwidthUsedInLastSecond:(unsigned long)(totalBytesSent-lastBytesSent)];		
+				[ASIHTTPRequest incrementGlobalBandwidthUsedInLastSecond:(unsigned long)(totalBytesSent-lastBytesSent)];
 						
 				#if DEBUG_REQUEST_STATUS
 				if ([self totalBytesSent] == [self postLength]) {
@@ -3268,10 +3268,10 @@ static NSOperationQueue *sharedQueue = nil;
 	// Reduce the buffer size if we're receiving data too quickly when bandwidth throttling is active
 	// This just augments the throttling done in measureBandwidthUsage to reduce the amount we go over the limit
 	
-	if ([[self class] isBandwidthThrottled]) {
-		[bandwidthThrottlingLock lock];
-		if (maxBandwidthPerSecond > 0) {
-			long long maxiumumSize  = (long long)maxBandwidthPerSecond-(long long)bandwidthUsedInLastSecond;
+	if ([[self class] isGlobalBandwidthThrottled]) {
+		[globalBandwidthThrottlingLock lock];
+		if (globalMaxBandwidthPerSecond > 0) {
+			long long maxiumumSize  = (long long)globalMaxBandwidthPerSecond-(long long)globalBandwidthUsedInLastSecond;
 			if (maxiumumSize < 0) {
 				// We aren't supposed to read any more data right now, but we'll read a single byte anyway so the CFNetwork's buffer isn't full
 				bufferSize = 1;
@@ -3283,7 +3283,7 @@ static NSOperationQueue *sharedQueue = nil;
 		if (bufferSize < 1) {
 			bufferSize = 1;
 		}
-		[bandwidthThrottlingLock unlock];
+		[globalBandwidthThrottlingLock unlock];
 	}
 	
 	
@@ -3315,7 +3315,7 @@ static NSOperationQueue *sharedQueue = nil;
 		[self setLastActivityTime:[NSDate date]];
 
 		// For bandwidth measurement / throttling
-		[ASIHTTPRequest incrementBandwidthUsedInLastSecond:bytesRead];
+		[ASIHTTPRequest incrementGlobalBandwidthUsedInLastSecond:bytesRead];
 		
 		// If we need to redirect, and have automatic redirect on, and might be resuming a download, let's do nothing with the content
 		if ([self needsRedirect] && [self shouldRedirect] && [self allowResumeForFileDownloads]) {
@@ -4477,12 +4477,12 @@ static NSOperationQueue *sharedQueue = nil;
 	if (![self readStream]) {
 		return;
 	}
-	[ASIHTTPRequest measureBandwidthUsage];
-	if ([ASIHTTPRequest isBandwidthThrottled]) {
-		[bandwidthThrottlingLock lock];
+	[ASIHTTPRequest measureGlobalBandwidthUsage];
+	if ([ASIHTTPRequest isGlobalBandwidthThrottled]) {
+		[globalBandwidthThrottlingLock lock];
 		// Handle throttling
-		if (throttleWakeUpTime) {
-			if ([throttleWakeUpTime timeIntervalSinceDate:[NSDate date]] > 0) {
+		if (globalThrottleWakeUpTime) {
+			if ([globalThrottleWakeUpTime timeIntervalSinceDate:[NSDate date]] > 0) {
 				if ([self readStreamIsScheduled]) {
 					[self unscheduleReadStream];
 					#if DEBUG_THROTTLING
@@ -4498,7 +4498,7 @@ static NSOperationQueue *sharedQueue = nil;
 				}
 			}
 		} 
-		[bandwidthThrottlingLock unlock];
+		[globalBandwidthThrottlingLock unlock];
 		
 	// Bandwidth throttling must have been turned off since we last looked, let's re-schedule the stream
 	} else if (![self readStreamIsScheduled]) {
@@ -4506,129 +4506,127 @@ static NSOperationQueue *sharedQueue = nil;
 	}
 }
 
-+ (BOOL)isBandwidthThrottled
++ (BOOL)isGlobalBandwidthThrottled
 {
 #if TARGET_OS_IPHONE
-	[bandwidthThrottlingLock lock];
-
-	BOOL throttle = isBandwidthThrottled || (!shouldThrottleBandwidthForWWANOnly && (maxBandwidthPerSecond > 0));
-	[bandwidthThrottlingLock unlock];
+	[globalBandwidthThrottlingLock lock];
+	BOOL throttle = isGlobalBandwidthThrottled || (!shouldGlobalThrottleBandwidthForWWANOnly && (globalMaxBandwidthPerSecond > 0));
+	[globalBandwidthThrottlingLock unlock];
 	return throttle;
 #else
-	[bandwidthThrottlingLock lock];
+	[globalBandwidthThrottlingLock lock];
 	BOOL throttle = (maxBandwidthPerSecond > 0);
-	[bandwidthThrottlingLock unlock];
+	[globalBandwidthThrottlingLock unlock];
 	return throttle;
 #endif
 }
 
-+ (unsigned long)maxBandwidthPerSecond
++ (unsigned long)maxGlobalBandwidthPerSecond
 {
-	[bandwidthThrottlingLock lock];
-	unsigned long amount = maxBandwidthPerSecond;
-	[bandwidthThrottlingLock unlock];
+	[globalBandwidthThrottlingLock lock];
+	unsigned long amount = globalMaxBandwidthPerSecond;
+	[globalBandwidthThrottlingLock unlock];
 	return amount;
 }
 
-+ (void)setMaxBandwidthPerSecond:(unsigned long)bytes
++ (void)setMaxGlobalBandwidthPerSecond:(unsigned long)bytes
 {
-	[bandwidthThrottlingLock lock];
-	maxBandwidthPerSecond = bytes;
-	[bandwidthThrottlingLock unlock];
+	[globalBandwidthThrottlingLock lock];
+	globalMaxBandwidthPerSecond = bytes;
+	[globalBandwidthThrottlingLock unlock];
 }
 
-+ (void)incrementBandwidthUsedInLastSecond:(unsigned long)bytes
++ (void)incrementGlobalBandwidthUsedInLastSecond:(unsigned long)bytes
 {
-	[bandwidthThrottlingLock lock];
-	bandwidthUsedInLastSecond += bytes;
-	[bandwidthThrottlingLock unlock];
+	[globalBandwidthThrottlingLock lock];
+	globalBandwidthUsedInLastSecond += bytes;
+	[globalBandwidthThrottlingLock unlock];
 }
 
-+ (void)recordBandwidthUsage
++ (void)recordGlobalBandwidthUsage
 {
-	if (bandwidthUsedInLastSecond == 0) {
-		[bandwidthUsageTracker removeAllObjects];
+	if (globalBandwidthUsedInLastSecond == 0) {
+		[globalBandwidthUsageTracker removeAllObjects];
 	} else {
-		NSTimeInterval interval = [bandwidthMeasurementDate timeIntervalSinceNow];
-		while ((interval < 0 || [bandwidthUsageTracker count] > 5) && [bandwidthUsageTracker count] > 0) {
-			[bandwidthUsageTracker removeObjectAtIndex:0];
+		NSTimeInterval interval = [globalBandwidthMeasurementDate timeIntervalSinceNow];
+		while ((interval < 0 || [globalBandwidthUsageTracker count] > 5) && [globalBandwidthUsageTracker count] > 0) {
+			[globalBandwidthUsageTracker removeObjectAtIndex:0];
 			interval++;
 		}
 	}
 	#if DEBUG_THROTTLING
 	ASI_DEBUG_LOG(@"[THROTTLING] ===Used: %u bytes of bandwidth in last measurement period===",bandwidthUsedInLastSecond);
 	#endif
-	[bandwidthUsageTracker addObject:[NSNumber numberWithUnsignedLong:bandwidthUsedInLastSecond]];
-	[bandwidthMeasurementDate release];
-	bandwidthMeasurementDate = [[NSDate dateWithTimeIntervalSinceNow:1] retain];
-	bandwidthUsedInLastSecond = 0;
+	[globalBandwidthUsageTracker addObject:[NSNumber numberWithUnsignedLong:globalBandwidthUsedInLastSecond]];
+	[globalBandwidthMeasurementDate release];
+	globalBandwidthMeasurementDate = [[NSDate dateWithTimeIntervalSinceNow:1] retain];
+	globalBandwidthUsedInLastSecond = 0;
 	
-	NSUInteger measurements = [bandwidthUsageTracker count];
+	NSUInteger measurements = [globalBandwidthUsageTracker count];
 	unsigned long totalBytes = 0;
-	for (NSNumber *bytes in bandwidthUsageTracker) {
+	for (NSNumber *bytes in globalBandwidthUsageTracker) {
 		totalBytes += [bytes unsignedLongValue];
 	}
-	averageBandwidthUsedPerSecond = totalBytes/measurements;		
+	globalAverageBandwidthUsedPerSecond = totalBytes/measurements;
 }
 
-+ (unsigned long)averageBandwidthUsedPerSecond
++ (unsigned long)averageGlobalBandwidthUsedPerSecond
 {
-	[bandwidthThrottlingLock lock];
-	unsigned long amount = 	averageBandwidthUsedPerSecond;
-	[bandwidthThrottlingLock unlock];
+	[globalBandwidthThrottlingLock lock];
+	unsigned long amount = 	globalAverageBandwidthUsedPerSecond;
+	[globalBandwidthThrottlingLock unlock];
 	return amount;
 }
 
-+ (void)measureBandwidthUsage
++ (void)measureGlobalBandwidthUsage
 {
 	// Other requests may have to wait for this lock if we're sleeping, but this is fine, since in that case we already know they shouldn't be sending or receiving data
-	[bandwidthThrottlingLock lock];
+	[globalBandwidthThrottlingLock lock];
 
-	if (!bandwidthMeasurementDate || [bandwidthMeasurementDate timeIntervalSinceNow] < -0) {
-		[ASIHTTPRequest recordBandwidthUsage];
+	if (!globalBandwidthMeasurementDate || [globalBandwidthMeasurementDate timeIntervalSinceNow] < -0) {
+		[ASIHTTPRequest recordGlobalBandwidthUsage];
 	}
 	
 	// Are we performing bandwidth throttling?
 	if (
 	#if TARGET_OS_IPHONE
-	isBandwidthThrottled || (!shouldThrottleBandwidthForWWANOnly && (maxBandwidthPerSecond))
+	isGlobalBandwidthThrottled || (!shouldGlobalThrottleBandwidthForWWANOnly && (globalMaxBandwidthPerSecond))
 	#else
 	maxBandwidthPerSecond
 	#endif
 	) {
 		// How much data can we still send or receive this second?
-		long long bytesRemaining = (long long)maxBandwidthPerSecond - (long long)bandwidthUsedInLastSecond;
+		long long bytesRemaining = (long long)globalMaxBandwidthPerSecond - (long long)globalBandwidthUsedInLastSecond;
 			
 		// Have we used up our allowance?
 		if (bytesRemaining < 0) {
-			
 			// Yes, put this request to sleep until a second is up, with extra added punishment sleeping time for being very naughty (we have used more bandwidth than we were allowed)
-			double extraSleepyTime = (-bytesRemaining/(maxBandwidthPerSecond*1.0));
-			[throttleWakeUpTime release];
-			throttleWakeUpTime = [[NSDate alloc] initWithTimeInterval:extraSleepyTime sinceDate:bandwidthMeasurementDate];
+			double extraSleepyTime = (-bytesRemaining/(globalMaxBandwidthPerSecond*1.0));
+			[globalThrottleWakeUpTime release];
+			globalThrottleWakeUpTime = [[NSDate alloc] initWithTimeInterval:extraSleepyTime sinceDate:globalBandwidthMeasurementDate];
 		}
 	}
-	[bandwidthThrottlingLock unlock];
+	[globalBandwidthThrottlingLock unlock];
 }
 	
 + (unsigned long)maxUploadReadLength
 {
-	[bandwidthThrottlingLock lock];
+	[globalBandwidthThrottlingLock lock];
 	
 	// We'll split our bandwidth allowance into 4 (which is the default for an ASINetworkQueue's max concurrent operations count) to give all running requests a fighting chance of reading data this cycle
-	long long toRead = maxBandwidthPerSecond/4;
-	if (maxBandwidthPerSecond > 0 && (bandwidthUsedInLastSecond + toRead > maxBandwidthPerSecond)) {
-		toRead = (long long)maxBandwidthPerSecond-(long long)bandwidthUsedInLastSecond;
+	long long toRead = globalMaxBandwidthPerSecond/4;
+	if (globalMaxBandwidthPerSecond > 0 && (globalBandwidthUsedInLastSecond + toRead > globalMaxBandwidthPerSecond)) {
+		toRead = (long long)globalMaxBandwidthPerSecond-(long long)globalBandwidthUsedInLastSecond;
 		if (toRead < 0) {
 			toRead = 0;
 		}
 	}
 	
-	if (toRead == 0 || !bandwidthMeasurementDate || [bandwidthMeasurementDate timeIntervalSinceNow] < -0) {
-		[throttleWakeUpTime release];
-		throttleWakeUpTime = [bandwidthMeasurementDate retain];
+	if (toRead == 0 || !globalBandwidthMeasurementDate || [globalBandwidthMeasurementDate timeIntervalSinceNow] < -0) {
+		[globalThrottleWakeUpTime release];
+		globalThrottleWakeUpTime = [globalBandwidthMeasurementDate retain];
 	}
-	[bandwidthThrottlingLock unlock];	
+	[globalBandwidthThrottlingLock unlock];	
 	return (unsigned long)toRead;
 }
 	
@@ -4640,21 +4638,21 @@ static NSOperationQueue *sharedQueue = nil;
 		[ASIHTTPRequest throttleBandwidthForWWANUsingLimit:ASIWWANBandwidthThrottleAmount];
 	} else {
 		[ASIHTTPRequest unsubscribeFromNetworkReachabilityNotifications];
-		[ASIHTTPRequest setMaxBandwidthPerSecond:0];
-		[bandwidthThrottlingLock lock];
-		isBandwidthThrottled = NO;
-		shouldThrottleBandwidthForWWANOnly = NO;
-		[bandwidthThrottlingLock unlock];
+		[ASIHTTPRequest setMaxGlobalBandwidthPerSecond:0];
+		[globalBandwidthThrottlingLock lock];
+		isGlobalBandwidthThrottled = NO;
+		shouldGlobalThrottleBandwidthForWWANOnly = NO;
+		[globalBandwidthThrottlingLock unlock];
 	}
 }
 
 + (void)throttleBandwidthForWWANUsingLimit:(unsigned long)limit
 {	
-	[bandwidthThrottlingLock lock];
-	shouldThrottleBandwidthForWWANOnly = YES;
-	maxBandwidthPerSecond = limit;
+	[globalBandwidthThrottlingLock lock];
+	shouldGlobalThrottleBandwidthForWWANOnly = YES;
+	globalMaxBandwidthPerSecond = limit;
 	[ASIHTTPRequest registerForNetworkReachabilityNotifications];	
-	[bandwidthThrottlingLock unlock];
+	[globalBandwidthThrottlingLock unlock];
 	[ASIHTTPRequest reachabilityChanged:nil];
 }
 
@@ -4679,9 +4677,9 @@ static NSOperationQueue *sharedQueue = nil;
 
 + (void)reachabilityChanged:(NSNotification *)note
 {
-	[bandwidthThrottlingLock lock];
-	isBandwidthThrottled = [ASIHTTPRequest isNetworkReachableViaWWAN];
-	[bandwidthThrottlingLock unlock];
+	[globalBandwidthThrottlingLock lock];
+	isGlobalBandwidthThrottled = [ASIHTTPRequest isNetworkReachableViaWWAN];
+	[globalBandwidthThrottlingLock unlock];
 }
 #endif
 

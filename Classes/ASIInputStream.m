@@ -49,7 +49,7 @@ static NSLock *readLock = nil;
 {
 	[readLock lock];
 	unsigned long toRead = len;
-	if ([ASIHTTPRequest isBandwidthThrottled]) {
+	if ([ASIHTTPRequest isGlobalBandwidthThrottled]) {
 		toRead = [ASIHTTPRequest maxUploadReadLength];
 		if (toRead > len) {
 			toRead = len;
@@ -61,7 +61,7 @@ static NSLock *readLock = nil;
 	[readLock unlock];
 	NSInteger rv = [stream read:buffer maxLength:toRead];
 	if (rv > 0)
-		[ASIHTTPRequest incrementBandwidthUsedInLastSecond:rv];
+		[ASIHTTPRequest incrementGlobalBandwidthUsedInLastSecond:rv];
 	return rv;
 }
 

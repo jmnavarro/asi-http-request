@@ -812,19 +812,19 @@ typedef void (^ASIDataBlock)(NSData *data);
 
 // The maximum number of bytes ALL requests can send / receive in a second
 // This is a rough figure. The actual amount used will be slightly more, this does not include HTTP headers
-+ (unsigned long)maxBandwidthPerSecond;
-+ (void)setMaxBandwidthPerSecond:(unsigned long)bytes;
++ (unsigned long)maxGlobalBandwidthPerSecond;
++ (void)setMaxGlobalBandwidthPerSecond:(unsigned long)bytes;
 
 // Get a rough average (for the last 5 seconds) of how much bandwidth is being used, in bytes
-+ (unsigned long)averageBandwidthUsedPerSecond;
++ (unsigned long)averageGlobalBandwidthUsedPerSecond;
 
 - (void)performThrottling;
 
 // Will return YES is bandwidth throttling is currently in use
-+ (BOOL)isBandwidthThrottled;
++ (BOOL)isGlobalBandwidthThrottled;
 
 // Used internally to record bandwidth use, and by ASIInputStreams when uploading. It's probably best if you don't mess with this.
-+ (void)incrementBandwidthUsedInLastSecond:(unsigned long)bytes;
++ (void)incrementGlobalBandwidthUsedInLastSecond:(unsigned long)bytes;
 
 // On iPhone, ASIHTTPRequest can automatically turn throttling on and off as the connection type changes between WWAN and WiFi
 
