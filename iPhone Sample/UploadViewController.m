@@ -52,7 +52,7 @@
 
 - (IBAction)toggleThrottling:(id)sender
 {
-	[ASIHTTPRequest setShouldThrottleBandwidthForWWAN:[(UISwitch *)sender isOn]];
+	[ASIHTTPRequest setShouldThrottleGlobalBandwidthForWWAN:[(UISwitch *)sender isOn]];
 }
 
 - (void)uploadFailed:(ASIHTTPRequest *)theRequest

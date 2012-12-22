@@ -347,7 +347,7 @@ IMPORTANT
 	int i;
 	for (i=0; i<3; i++) {
 		NSData *data = [[[NSMutableData alloc] initWithLength:fileSizes[i]*1024] autorelease];
-		NSString *path = [[self filePathForTemporaryTestFiles] stringByAppendingPathComponent:[NSString stringWithFormat:@"file%hi",i]];
+		NSString *path = [[self filePathForTemporaryTestFiles] stringByAppendingPathComponent:[NSString stringWithFormat:@"file%u",i]];
 		[data writeToFile:path atomically:NO];
 		ASIFormDataRequest *request = [[[ASIFormDataRequest alloc] initWithURL:url] autorelease];
 		[request setFile:path forKey:@"file"];
@@ -376,7 +376,7 @@ IMPORTANT
 	
 	for (i=0; i<3; i++) {
 		NSData *data = [[[NSMutableData alloc] initWithLength:fileSizes[i]*1024] autorelease];
-		NSString *path = [[self filePathForTemporaryTestFiles] stringByAppendingPathComponent:[NSString stringWithFormat:@"file%hi",i]];
+		NSString *path = [[self filePathForTemporaryTestFiles] stringByAppendingPathComponent:[NSString stringWithFormat:@"file%u",i]];
 		[data writeToFile:path atomically:NO];
 		ASIFormDataRequest *request = [[[ASIFormDataRequest alloc] initWithURL:url] autorelease];
 		[request setFile:path forKey:@"file"];
@@ -914,7 +914,7 @@ IMPORTANT
 {
 	complete = NO;
 	
-	[ASIHTTPRequest setMaxBandwidthPerSecond:0];
+	[ASIHTTPRequest setMaxGlobalBandwidthPerSecond:0];
 	
 	ASINetworkQueue *networkQueue = [ASINetworkQueue queue];
 	[networkQueue setDelegate:self];
@@ -950,7 +950,7 @@ IMPORTANT
 	complete = NO;
 	
 	// Now we'll test with throttling
-	[ASIHTTPRequest setMaxBandwidthPerSecond:ASIWWANBandwidthThrottleAmount];
+	[ASIHTTPRequest setMaxGlobalBandwidthPerSecond:ASIWWANBandwidthThrottleAmount];
 	
 	for (i=0; i<5; i++) {
 		ASIHTTPRequest *request = [ASIHTTPRequest requestWithURL:[NSURL URLWithString:@"http://allseeing-i.com/i/logo.png"]];
@@ -964,7 +964,7 @@ IMPORTANT
 		[[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.25]];
 	}
 	
-	[ASIHTTPRequest setMaxBandwidthPerSecond:0];
+	[ASIHTTPRequest setMaxGlobalBandwidthPerSecond:0];
 	
 	interval =[date timeIntervalSinceNow];
 	success = (interval < -6);
@@ -976,7 +976,7 @@ IMPORTANT
 {
 	complete = NO;
 	
-	[ASIHTTPRequest setMaxBandwidthPerSecond:0];
+	[ASIHTTPRequest setMaxGlobalBandwidthPerSecond:0];
 	
 	ASINetworkQueue *networkQueue = [ASINetworkQueue queue];
 	[networkQueue setDelegate:self];
@@ -1014,7 +1014,7 @@ IMPORTANT
 	complete = NO;
 	
 	// Now we'll test with throttling
-	[ASIHTTPRequest setMaxBandwidthPerSecond:ASIWWANBandwidthThrottleAmount];
+	[ASIHTTPRequest setMaxGlobalBandwidthPerSecond:ASIWWANBandwidthThrottleAmount];
 
 	for (i=0; i<10; i++) {
 		ASIHTTPRequest *request = [ASIHTTPRequest requestWithURL:[NSURL URLWithString:@"http://allseeing-i.com/ignore"]];
@@ -1029,7 +1029,7 @@ IMPORTANT
 		[[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.25]];
 	}
 	
-	[ASIHTTPRequest setMaxBandwidthPerSecond:0];
+	[ASIHTTPRequest setMaxGlobalBandwidthPerSecond:0];
 	
 	interval =[date timeIntervalSinceNow];
 	success = (interval < -10);

@@ -436,15 +436,15 @@
 		if (i > 304 && i < 307) {
 			continue;
 		}
-		NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"http://allseeing-i.com/ASIHTTPRequest/tests/redirect/%hi",i]];
+		NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"http://allseeing-i.com/ASIHTTPRequest/tests/redirect/%u",i]];
 		request = [ASIHTTPRequest requestWithURL:url];
 		[request setShouldRedirect:NO];
 		[request startSynchronous];
 		if (i == 304) { // 304s will not contain a body, as per rfc2616. Will test 304 handling in a future test when we have etag support
 			continue;
 		}
-		success = [[request responseString] isEqualToString:[NSString stringWithFormat:@"Non-redirected content with %hi status code",i]];
-		GHAssertTrue(success,[NSString stringWithFormat:@"Got the wrong content when not redirecting after a %hi",i]);
+		success = [[request responseString] isEqualToString:[NSString stringWithFormat:@"Non-redirected content with %u status code",i]];
+		GHAssertTrue(success,[NSString stringWithFormat:@"Got the wrong content when not redirecting after a %u",i]);
 	
 		request2 = [ASIFormDataRequest requestWithURL:url];
 		[request2 setPostValue:@"Giant Monkey" forKey:@"lookbehindyou"];
@@ -454,13 +454,13 @@
 		if (i>304) {
 			method = @"POST";	
 		}
-		NSString *expectedString = [NSString stringWithFormat:@"Redirected as %@ after a %hi status code",method,i];
+		NSString *expectedString = [NSString stringWithFormat:@"Redirected as %@ after a %u status code",method,i];
 		if (i>304) {
 			expectedString = [NSString stringWithFormat:@"%@\r\nWatch out for the Giant Monkey!",expectedString];
 		}
 
 		success = [[request2 responseString] isEqualToString:expectedString];
-		GHAssertTrue(success,[NSString stringWithFormat:@"Got the wrong content when redirecting after a %hi",i]);
+		GHAssertTrue(success,[NSString stringWithFormat:@"Got the wrong content when redirecting after a %u",i]);
 	
 		success = ([request2 responseStatusCode] == 200);
 		GHAssertTrue(success,@"Got the wrong status code (expected 200)");
@@ -470,7 +470,7 @@
 	// Test RFC 2616 behaviour
 	for (i=301; i<303; i++) {
 		
-		NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"http://allseeing-i.com/ASIHTTPRequest/tests/redirect/%hi",i]];
+		NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"http://allseeing-i.com/ASIHTTPRequest/tests/redirect/%u",i]];
 		request2 = [ASIFormDataRequest requestWithURL:url];
 		[request2 setPostValue:@"Giant Monkey" forKey:@"lookbehindyou"];
 		[request2 setShouldUseRFC2616RedirectBehaviour:YES];
@@ -483,14 +483,14 @@
 			success = ([request2 postLength] == 0 && ![request2 postBody] && [[request2 requestMethod] isEqualToString:@"GET"]);
 			GHAssertTrue(success,@"Failed to reset request to GET on 303 redirect");
 			
-			success = [[request2 responseString] isEqualToString:[NSString stringWithFormat:@"Redirected as GET after a %hi status code",i]];
+			success = [[request2 responseString] isEqualToString:[NSString stringWithFormat:@"Redirected as GET after a %u status code",i]];
 			GHAssertTrue(success,@"Failed to dump the post body on 303 redirect");
 			
 		} else {
 			success = ([request2 postLength] > 0 || ![request2 postBody] || ![[request2 requestMethod] isEqualToString:@"POST"]);
 			GHAssertTrue(success,@"Failed to use the same request method and body for a redirect when using rfc2616 behaviour");
 		
-			success = ([[request2 responseString] isEqualToString:[NSString stringWithFormat:@"Redirected as POST after a %hi status code\r\nWatch out for the Giant Monkey!",i]]);
+			success = ([[request2 responseString] isEqualToString:[NSString stringWithFormat:@"Redirected as POST after a %u status code\r\nWatch out for the Giant Monkey!",i]]);
 			GHAssertTrue(success,@"Failed to send the correct post body on redirect");
 		}
 	}
@@ -524,11 +524,11 @@
 {
 	int i;
 	for (i=305; i<308; i++) {
-		ASIFormDataRequest *request = [ASIFormDataRequest requestWithURL:[NSURL URLWithString:[NSString stringWithFormat:@"http://allseeing-i.com/ASIHTTPRequest/tests/redirect/%hi",i]]];
+		ASIFormDataRequest *request = [ASIFormDataRequest requestWithURL:[NSURL URLWithString:[NSString stringWithFormat:@"http://allseeing-i.com/ASIHTTPRequest/tests/redirect/%u",i]]];
 		[request setPostValue:@"foo" forKey:@"eep"];
 		[request setShouldRedirect:NO];
 		[request startSynchronous];
-		request = [ASIFormDataRequest requestWithURL:[NSURL URLWithString:[NSString stringWithFormat:@"http://allseeing-i.com/ASIHTTPRequest/tests/redirect/%hi",i]]];
+		request = [ASIFormDataRequest requestWithURL:[NSURL URLWithString:[NSString stringWithFormat:@"http://allseeing-i.com/ASIHTTPRequest/tests/redirect/%u",i]]];
 		[request setPostValue:@"foo" forKey:@"eep"];
 		[request startSynchronous];
 	}
@@ -661,7 +661,7 @@
 	[request setPostBody:[NSMutableData dataWithLength:1024*32]];
 	[request startSynchronous];
 	
-	BOOL success = ([[request responseString] isEqualToString:[NSString stringWithFormat:@"%hu",(1024*32)]]);
+	BOOL success = ([[request responseString] isEqualToString:[NSString stringWithFormat:@"%u",(1024*32)]]);
 	GHAssertTrue(success,@"Sent wrong content length");
 }
 
@@ -1509,63 +1509,128 @@
 
 - (void)testThrottlingDownloadBandwidth
 {
-	[ASIHTTPRequest setMaxBandwidthPerSecond:0];
-	
+	[ASIHTTPRequest setMaxGlobalBandwidthPerSecond:0];
 	// This content is around 128KB in size, and it won't be gzipped, so it should take more than 8 seconds to download at 14.5KB / second
 	// We'll test first without throttling
-	ASIHTTPRequest *request = [ASIHTTPRequest requestWithURL:[NSURL URLWithString:@"http://allseeing-i.com/ASIHTTPRequest/tests/the_great_american_novel_%28abridged%29.txt"]];
-	NSDate *date = [NSDate date];
-	[request startSynchronous];	
+	ASIHTTPRequest *request1 = [ASIHTTPRequest requestWithURL:[NSURL URLWithString:@"http://allseeing-i.com/ASIHTTPRequest/tests/the_great_american_novel_%28abridged%29.txt"]];
+	NSDate *date1 = [NSDate date];
+	[request1 startSynchronous];
 	
-	NSTimeInterval interval =[date timeIntervalSinceNow];
-	BOOL success = (interval > -7);
-	GHAssertTrue(success,@"Downloaded the file too slowly - either this is a bug, or your internet connection is too slow to run this test (must be able to download 128KB in less than 7 seconds, without throttling)");
-	
+	NSTimeInterval interval1 =[date1 timeIntervalSinceNow];
+	BOOL success1 = (interval1 > -7);
+	GHAssertTrue(success1,@"Downloaded the file too slowly - either this is a bug, or your internet connection is too slow to run this test (must be able to download 128KB in less than 7 seconds, without throttling)");
+
 	// Now we'll test with throttling
-	[ASIHTTPRequest setMaxBandwidthPerSecond:ASIWWANBandwidthThrottleAmount];
-	request = [ASIHTTPRequest requestWithURL:[NSURL URLWithString:@"http://allseeing-i.com/ASIHTTPRequest/tests/the_great_american_novel_%28abridged%29.txt"]];
-	date = [NSDate date];
-	[request startSynchronous];	
+	[ASIHTTPRequest setMaxGlobalBandwidthPerSecond:ASIWWANBandwidthThrottleAmount];
+	ASIHTTPRequest *request2 = [ASIHTTPRequest requestWithURL:[NSURL URLWithString:@"http://allseeing-i.com/ASIHTTPRequest/tests/the_great_american_novel_%28abridged%29.txt"]];
+	NSDate *date2 = [NSDate date];
+	[request2 startSynchronous];
 	
-	[ASIHTTPRequest setMaxBandwidthPerSecond:0];
+	[ASIHTTPRequest setMaxGlobalBandwidthPerSecond:0];
 	
-	interval =[date timeIntervalSinceNow];
-	success = (interval < -7);
-	GHAssertTrue(success,@"Failed to throttle download");		
-	GHAssertNil([request error],@"Request generated an error - timeout?");	
-	
+	NSTimeInterval interval2 =[date2 timeIntervalSinceNow];
+	BOOL success2 = (interval2 < -7);
+	GHAssertTrue(success2,@"Failed to throttle download");
+	GHAssertNil([request2 error],@"Request generated an error - timeout?");	
 }
+
+
+- (void)testThrottlingRequestDownloadBandwidth
+{
+    // reset global
+	[ASIHTTPRequest setMaxGlobalBandwidthPerSecond:0];
+
+	// This content is around 128KB in size, and it won't be gzipped, so it should take more than 8 seconds to download at 14.5KB / second
+	// We'll test first without throttling
+	ASIHTTPRequest *request1 = [ASIHTTPRequest requestWithURL:[NSURL URLWithString:@"http://allseeing-i.com/ASIHTTPRequest/tests/the_great_american_novel_%28abridged%29.txt"]];
+    [request1 setMaxBandwidthPerSecond:0];
+	NSDate *date1 = [NSDate date];
+	[request1 startSynchronous];
+	
+	NSTimeInterval interval1 = [date1 timeIntervalSinceNow];
+	BOOL success1 = (interval1 > -7);
+	GHAssertTrue(success1,@"Downloaded the file too slowly - either this is a bug, or your internet connection is too slow to run this test (must be able to download 128KB in less than 7 seconds, without throttling)");
+
+	// Now we'll test with throttling
+	ASIHTTPRequest *request2 = [ASIHTTPRequest requestWithURL:[NSURL URLWithString:@"http://allseeing-i.com/ASIHTTPRequest/tests/the_great_american_novel_%28abridged%29.txt"]];
+    [request2 setMaxBandwidthPerSecond:ASIWWANBandwidthThrottleAmount];
+	NSDate* date2 = [NSDate date];
+	[request2 startSynchronous];
+
+	GHAssertTrue(request2.responseStatusCode == 200, @"Failed to download");
+	NSTimeInterval interval2 = [date2 timeIntervalSinceNow];
+	BOOL success2 = (interval2 < -7);
+	GHAssertTrue(success2,@"Failed to throttle download");
+	GHAssertNil([request2 error],@"Request generated an error - timeout?");
+}
+
+- (void)testThrottlingRequestAndGlobalDownloadBandwidth
+{
+    // global bandwidth -> overwritten by request bandwidth
+	[ASIHTTPRequest setMaxGlobalBandwidthPerSecond:ASIWWANBandwidthThrottleAmount];
+    
+	// Now we'll test with throttling
+	ASIHTTPRequest *request2 = [ASIHTTPRequest requestWithURL:[NSURL URLWithString:@"http://allseeing-i.com/ASIHTTPRequest/tests/the_great_american_novel_%28abridged%29.txt"]];
+    [request2 setMaxBandwidthPerSecond:ASIWWANBandwidthThrottleAmount/2]; // divides the bandwith by 2
+	NSDate* date2 = [NSDate date];
+	[request2 startSynchronous];
+    
+	GHAssertTrue(request2.responseStatusCode == 200, @"Failed to download");
+	NSTimeInterval interval2 = [date2 timeIntervalSinceNow];
+	BOOL success2 = (interval2 < -14); // multiplies the time by 2
+	GHAssertTrue(success2,@"Failed to throttle download");
+	GHAssertNil([request2 error],@"Request generated an error - timeout?");
+}
+
 
 - (void)testThrottlingUploadBandwidth
 {
-	[ASIHTTPRequest setMaxBandwidthPerSecond:0];
+	[ASIHTTPRequest setMaxGlobalBandwidthPerSecond:0];
 	
 	// Create a 64KB request body
 	NSData *data = [[[NSMutableData alloc] initWithLength:64*1024] autorelease];
 	
 	// We'll test first without throttling
-	ASIHTTPRequest *request = [ASIHTTPRequest requestWithURL:[NSURL URLWithString:@"http://allseeing-i.com/ignore"]];
-	[request appendPostData:data];
-	NSDate *date = [NSDate date];
-	[request startSynchronous];	
-	
-	NSTimeInterval interval =[date timeIntervalSinceNow];
-	BOOL success = (interval > -3);
-	GHAssertTrue(success,@"Uploaded the data too slowly - either this is a bug, or your internet connection is too slow to run this test (must be able to upload 64KB in less than 3 seconds, without throttling)");
+	ASIHTTPRequest *request1 = [ASIHTTPRequest requestWithURL:[NSURL URLWithString:@"http://allseeing-i.com/ignore"]];
+	[request1 appendPostData:data];
+	NSDate *date1 = [NSDate date];
+	[request1 startSynchronous];
+
+	GHAssertTrue([date1 timeIntervalSinceNow] > -3,@"Uploaded the data too slowly - either this is a bug, or your internet connection is too slow to run this test (must be able to upload 64KB in less than 3 seconds, without throttling)");
 	
 	// Now we'll test with throttling
-	[ASIHTTPRequest setMaxBandwidthPerSecond:ASIWWANBandwidthThrottleAmount];
-	request = [ASIHTTPRequest requestWithURL:[NSURL URLWithString:@"http://allseeing-i.com/ignore"]];
-	[request appendPostData:data];
-	date = [NSDate date];
-	[request startSynchronous];	
+	[ASIHTTPRequest setMaxGlobalBandwidthPerSecond:ASIWWANBandwidthThrottleAmount];
+	ASIHTTPRequest *request2 = [ASIHTTPRequest requestWithURL:[NSURL URLWithString:@"http://allseeing-i.com/ignore"]];
+	[request2 appendPostData:data];
+	NSDate *date2 = [NSDate date];
+	[request2 startSynchronous];
 	
-	[ASIHTTPRequest setMaxBandwidthPerSecond:0];
+	[ASIHTTPRequest setMaxGlobalBandwidthPerSecond:0];
 	
-	interval =[date timeIntervalSinceNow];
-	success = (interval < -3);
-	GHAssertTrue(success,@"Failed to throttle upload");		
-	GHAssertNil([request error],@"Request generated an error - timeout?");	
+	GHAssertTrue([date2 timeIntervalSinceNow] < -3,@"Failed to throttle upload");
+	GHAssertNil([request2 error],@"Request generated an error - timeout?");
+}
+
+
+- (void)testThrottlingRequestUploadBandwidth
+{
+    // reset
+	[ASIHTTPRequest setMaxGlobalBandwidthPerSecond:0];
+	
+	// Create a 64KB request body
+	NSData *data = [[[NSMutableData alloc] initWithLength:64*1024] autorelease];
+	
+	// Now we'll test with throttling
+	ASIHTTPRequest *request2 = [ASIHTTPRequest requestWithURL:[NSURL URLWithString:@"http://allseeing-i.com/ignore"]];
+    [request2 setMaxBandwidthPerSecond:ASIWWANBandwidthThrottleAmount];
+	[request2 appendPostData:data];
+	NSDate *date2 = [NSDate date];
+	[request2 startSynchronous];
+	
+	[ASIHTTPRequest setMaxGlobalBandwidthPerSecond:0];
+	
+	GHAssertTrue([date2 timeIntervalSinceNow] < -3, @"Failed to throttle upload");
+	GHAssertNil([request2 error],@"Request generated an error - timeout?");
 }
 
 

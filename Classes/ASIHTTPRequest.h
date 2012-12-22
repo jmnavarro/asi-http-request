@@ -538,6 +538,39 @@ typedef void (^ASIDataBlock)(NSData *data);
     //block for handling redirections, if you want to
     ASIBasicBlock requestRedirectedBlock;
 	#endif
+
+    //
+    // Bandwidth throttling for this request
+    //
+    // TODO: bandwidth usage is computed as request level or as global level.
+    // Request level data usage should also be computed also as global, but it isn't.
+    
+    NSMutableArray *requestBandwidthUsageTracker;
+    unsigned long requestAverageBandwidthUsedPerSecond;
+
+    // Records how much bandwidth all requests combined have used in the last second
+    unsigned long requestBandwidthUsedInLastSecond;
+
+    // A date one second in the future from the time it was created
+    NSDate *requestBandwidthMeasurementDate;
+
+    // the maximum number of bytes that can be transmitted in one second
+    unsigned long requestMaxBandwidthPerSecond;
+
+    // When throttling bandwidth, Set to a date in future that we will allow all requests to wake up and reschedule their streams
+    NSDate *requestThrottleWakeUpTime;
+
+#if TARGET_OS_IPHONE
+    // YES when bandwidth throttling is active
+    // This flag does not denote whether throttling is turned on - rather whether it is currently in use
+    // It will be set to NO when throttling was turned on with setShouldThrottleBandwidthForWWAN, but a WI-FI connection is active
+    BOOL isRequestBandwidthThrottled;
+
+    // When YES, bandwidth will be automatically throttled when using WWAN (3G/Edge/GPRS)
+    // Wifi will not be throttled
+    BOOL requestShouldThrottleBandwidthForWWANOnly;
+#endif
+
 }
 
 #pragma mark init / dealloc
@@ -830,10 +863,10 @@ typedef void (^ASIDataBlock)(NSData *data);
 
 #if TARGET_OS_IPHONE
 // Set to YES to automatically turn on throttling when WWAN is connected, and automatically turn it off when it isn't
-+ (void)setShouldThrottleBandwidthForWWAN:(BOOL)throttle;
++ (void)setShouldThrottleGlobalBandwidthForWWAN:(BOOL)throttle;
 
 // Turns on throttling automatically when WWAN is connected using a custom limit, and turns it off automatically when it isn't
-+ (void)throttleBandwidthForWWANUsingLimit:(unsigned long)limit;
++ (void)throttleGlobalBandwidthForWWANUsingLimit:(unsigned long)limit;
 
 #pragma mark reachability
 
@@ -1000,5 +1033,13 @@ typedef void (^ASIDataBlock)(NSData *data);
 #endif
 @property (retain) ASIDataDecompressor *dataDecompressor;
 @property (assign) BOOL shouldWaitToInflateCompressedResponses;
+
+
+#if TARGET_OS_IPHONE
+@property (assign) BOOL shouldThrottleBandwidthForWWANOnly;
+#endif
+@property (assign) unsigned long maxBandwidthPerSecond;
+@property (readonly) BOOL isBandwidthThrottled;
+@property (readonly) unsigned long bandwidthUsedInLastSecond;
 
 @end

@@ -190,6 +190,15 @@ static NSOperationQueue *sharedQueue = nil;
 + (void)reachabilityChanged:(NSNotification *)note;
 #endif
 
+
+#if TARGET_OS_IPHONE
+- (void)registerRequestForNetworkReachabilityNotifications;
+- (void)unsubscribeRequestFromNetworkReachabilityNotifications;
+// Called when the status of the network changes
+- (void)requestReachabilityChanged:(NSNotification *)note;
+#endif
+
+
 #if NS_BLOCKS_AVAILABLE
 - (void)performBlockOnMainThread:(ASIBasicBlock)block;
 - (void)releaseBlocksOnMainThread;
@@ -308,6 +317,9 @@ static NSOperationQueue *sharedQueue = nil;
 	[self setURL:newURL];
 	[self setCancelledLock:[[[NSRecursiveLock alloc] init] autorelease]];
 	[self setDownloadCache:[[self class] defaultCache]];
+
+    requestBandwidthUsageTracker = [[NSMutableArray alloc] initWithCapacity:5];
+
 	return self;
 }
 
@@ -397,6 +409,10 @@ static NSOperationQueue *sharedQueue = nil;
 	#if NS_BLOCKS_AVAILABLE
 	[self releaseBlocksOnMainThread];
 	#endif
+
+    [requestBandwidthUsageTracker release];
+    [requestBandwidthMeasurementDate release];
+    [requestThrottleWakeUpTime release];
 
 	[super dealloc];
 }
@@ -1545,6 +1561,7 @@ static NSOperationQueue *sharedQueue = nil;
 				// We've uploaded more data,  reset the timeout
 				[self setLastActivityTime:[NSDate date]];
 				[ASIHTTPRequest incrementGlobalBandwidthUsedInLastSecond:(unsigned long)(totalBytesSent-lastBytesSent)];
+                [self incrementRequestBandwidthUsedInLastSecond:(unsigned long)(totalBytesSent-lastBytesSent)];
 						
 				#if DEBUG_REQUEST_STATUS
 				if ([self totalBytesSent] == [self postLength]) {
@@ -3240,6 +3257,22 @@ static NSOperationQueue *sharedQueue = nil;
 	return false;
 }
 
+- (long long)computeBufferSizeWithMaxBandwidthPerSecond:(unsigned long)maxBandwidthPerSecond andUsedBandwidthInLastSecond:(unsigned long)bandwidthUsedInLastSecond {
+    long long bufferSize;
+    long long maxiumumSize  = (long long)maxBandwidthPerSecond-(long long)bandwidthUsedInLastSecond;
+    if (maxiumumSize < 0) {
+        // We aren't supposed to read any more data right now, but we'll read a single byte anyway so the CFNetwork's buffer isn't full
+        bufferSize = 1;
+    } else if (maxiumumSize/4 < bufferSize) {
+        // We were going to fetch more data that we should be allowed, so we'll reduce the size of our read
+        bufferSize = maxiumumSize/4;
+    }
+    if (bufferSize < 1) {
+        bufferSize = 1;
+    }
+    return bufferSize;
+}
+
 - (void)handleBytesAvailable
 {
 	if (![self responseHeaders]) {
@@ -3264,29 +3297,23 @@ static NSOperationQueue *sharedQueue = nil;
 	} else if (contentLength > 65536) {
 		bufferSize = 65536;
 	}
-	
-	// Reduce the buffer size if we're receiving data too quickly when bandwidth throttling is active
+
+    // Request throttling overrides global throttling
+
+    // Reduce the buffer size if we're receiving data too quickly when bandwidth throttling is active
 	// This just augments the throttling done in measureBandwidthUsage to reduce the amount we go over the limit
-	
-	if ([[self class] isGlobalBandwidthThrottled]) {
+	if (self.isBandwidthThrottled) {
+		if (requestMaxBandwidthPerSecond > 0) {
+            bufferSize = [self computeBufferSizeWithMaxBandwidthPerSecond:requestMaxBandwidthPerSecond andUsedBandwidthInLastSecond:requestBandwidthUsedInLastSecond];
+		}
+	} else if ([[self class] isGlobalBandwidthThrottled]) {
 		[globalBandwidthThrottlingLock lock];
 		if (globalMaxBandwidthPerSecond > 0) {
-			long long maxiumumSize  = (long long)globalMaxBandwidthPerSecond-(long long)globalBandwidthUsedInLastSecond;
-			if (maxiumumSize < 0) {
-				// We aren't supposed to read any more data right now, but we'll read a single byte anyway so the CFNetwork's buffer isn't full
-				bufferSize = 1;
-			} else if (maxiumumSize/4 < bufferSize) {
-				// We were going to fetch more data that we should be allowed, so we'll reduce the size of our read
-				bufferSize = maxiumumSize/4;
-			}
-		}
-		if (bufferSize < 1) {
-			bufferSize = 1;
+            bufferSize = [self computeBufferSizeWithMaxBandwidthPerSecond:globalMaxBandwidthPerSecond andUsedBandwidthInLastSecond:globalBandwidthUsedInLastSecond];
 		}
 		[globalBandwidthThrottlingLock unlock];
 	}
-	
-	
+
     UInt8 buffer[bufferSize];
     NSInteger bytesRead = [[self readStream] read:buffer maxLength:sizeof(buffer)];
 
@@ -3316,6 +3343,7 @@ static NSOperationQueue *sharedQueue = nil;
 
 		// For bandwidth measurement / throttling
 		[ASIHTTPRequest incrementGlobalBandwidthUsedInLastSecond:bytesRead];
+        [self incrementRequestBandwidthUsedInLastSecond:bytesRead];
 		
 		// If we need to redirect, and have automatic redirect on, and might be resuming a download, let's do nothing with the content
 		if ([self needsRedirect] && [self shouldRedirect] && [self allowResumeForFileDownloads]) {
@@ -4470,7 +4498,142 @@ static NSOperationQueue *sharedQueue = nil;
     return [NSMakeCollectable(MIMEType) autorelease];
 }
 
+
+#pragma mark request bandwidth measurement / throttling
+
+
+
+- (BOOL)isBandwidthThrottled
+{
+#if TARGET_OS_IPHONE
+	return isRequestBandwidthThrottled || (!requestShouldThrottleBandwidthForWWANOnly && (requestMaxBandwidthPerSecond > 0));
+#else
+	return (requestMaxBandwidthPerSecond > 0);
+#endif
+}
+
+- (void)incrementRequestBandwidthUsedInLastSecond:(unsigned long)bytes
+{
+	requestBandwidthUsedInLastSecond += bytes;
+}
+
+- (void)recordRequestBandwidthUsage
+{
+	if (requestBandwidthUsedInLastSecond == 0) {
+		[requestBandwidthUsageTracker removeAllObjects];
+	} else {
+		NSTimeInterval interval = [requestBandwidthMeasurementDate timeIntervalSinceNow];
+		while ((interval < 0 || [requestBandwidthUsageTracker count] > 5) && [requestBandwidthUsageTracker count] > 0) {
+			[requestBandwidthUsageTracker removeObjectAtIndex:0];
+			interval++;
+		}
+	}
+#if DEBUG_THROTTLING
+	ASI_DEBUG_LOG(@"[THROTTLING for %p] ===Used: %lu bytes of bandwidth in last measurement period===", self, requestBandwidthUsedInLastSecond);
+#endif
+	[requestBandwidthUsageTracker addObject:[NSNumber numberWithUnsignedLong:requestBandwidthUsedInLastSecond]];
+	[requestBandwidthMeasurementDate release];
+	requestBandwidthMeasurementDate = [[NSDate dateWithTimeIntervalSinceNow:1] retain];
+	requestBandwidthUsedInLastSecond = 0;
+
+	NSUInteger measurements = [requestBandwidthUsageTracker count];
+	unsigned long totalBytes = 0;
+	for (NSNumber *bytes in requestBandwidthUsageTracker) {
+		totalBytes += [bytes unsignedLongValue];
+	}
+	requestAverageBandwidthUsedPerSecond = totalBytes/measurements;
+}
+
+- (void)measureRequestBandwidthUsage
+{
+	if (!requestBandwidthMeasurementDate || [requestBandwidthMeasurementDate timeIntervalSinceNow] < -0) {
+		[self recordRequestBandwidthUsage];
+	}
+	
+	// Are we performing bandwidth throttling?
+	if (
+#if TARGET_OS_IPHONE
+        isRequestBandwidthThrottled || (!requestShouldThrottleBandwidthForWWANOnly && requestMaxBandwidthPerSecond)
+#else
+        requestMaxBandwidthPerSecond
+#endif
+        ) {
+		// How much data can we still send or receive this second?
+		long long bytesRemaining = (long long)requestMaxBandwidthPerSecond - (long long)requestBandwidthUsedInLastSecond;
+
+		// Have we used up our allowance?
+		if (bytesRemaining < 0) {
+			// Yes, put this request to sleep until a second is up, with extra added punishment sleeping time for being very naughty (we have used more bandwidth than we were allowed)
+			double extraSleepyTime = (-bytesRemaining/(requestMaxBandwidthPerSecond*1.0));
+			[requestThrottleWakeUpTime release];
+			requestThrottleWakeUpTime = [[NSDate alloc] initWithTimeInterval:extraSleepyTime sinceDate:requestBandwidthMeasurementDate];
+		}
+    }
+}
+
+- (unsigned long)maxRequestUploadReadLength
+{
+	// We'll split our bandwidth allowance into 4 (which is the default for an ASINetworkQueue's max concurrent operations count) to give all running requests a fighting chance of reading data this cycle
+	long long toRead = requestMaxBandwidthPerSecond/4;
+	if (requestMaxBandwidthPerSecond > 0 && (requestBandwidthUsedInLastSecond + toRead > requestMaxBandwidthPerSecond)) {
+		toRead = (long long)requestMaxBandwidthPerSecond-(long long)requestBandwidthUsedInLastSecond;
+		if (toRead < 0) {
+			toRead = 0;
+		}
+	}
+
+	if (toRead == 0 || !requestBandwidthMeasurementDate || [requestBandwidthMeasurementDate timeIntervalSinceNow] < -0) {
+		[requestThrottleWakeUpTime release];
+		requestThrottleWakeUpTime = [requestBandwidthMeasurementDate retain];
+	}
+	return (unsigned long)toRead;
+}
+
+
+#if TARGET_OS_IPHONE
+- (void)setShouldThrottleBandwidthForWWAN:(BOOL)throttle
+{
+	if (throttle) {
+		[self throttleBandwidthForWWANUsingLimit:ASIWWANBandwidthThrottleAmount];
+	} else {
+		[self unsubscribeRequestFromNetworkReachabilityNotifications];
+		self.maxBandwidthPerSecond = 0;
+		isRequestBandwidthThrottled = NO;
+		requestShouldThrottleBandwidthForWWANOnly = NO;
+	}
+}
+
+- (void)throttleBandwidthForWWANUsingLimit:(unsigned long)limit
+{
+	requestShouldThrottleBandwidthForWWANOnly = YES;
+	requestMaxBandwidthPerSecond = limit;
+	[self registerRequestForNetworkReachabilityNotifications];
+	[self requestReachabilityChanged:nil];
+}
+#endif
+
 #pragma mark bandwidth measurement / throttling
+
+- (void)handleThrottlingForWakeUpTime:(NSDate*)wakeUpTime
+{
+    if (wakeUpTime) {
+        if ([wakeUpTime timeIntervalSinceDate:[NSDate date]] > 0) {
+            if ([self readStreamIsScheduled]) {
+                [self unscheduleReadStream];
+                #if DEBUG_THROTTLING
+                ASI_DEBUG_LOG(@"[THROTTLING] Sleeping request %@ until after %@",self,wakeUpTime);
+                #endif
+            }
+        } else {
+            if (![self readStreamIsScheduled]) {
+                [self scheduleReadStream];
+                #if DEBUG_THROTTLING
+                ASI_DEBUG_LOG(@"[THROTTLING] Waking up request %@",self);
+                #endif
+            }
+        }
+    }
+}
 
 - (void)performThrottling
 {
@@ -4478,26 +4641,13 @@ static NSOperationQueue *sharedQueue = nil;
 		return;
 	}
 	[ASIHTTPRequest measureGlobalBandwidthUsage];
-	if ([ASIHTTPRequest isGlobalBandwidthThrottled]) {
+    [self measureRequestBandwidthUsage];
+
+	if (self.isBandwidthThrottled) {
+        [self handleThrottlingForWakeUpTime:requestThrottleWakeUpTime];
+    } else if ([ASIHTTPRequest isGlobalBandwidthThrottled]) {
 		[globalBandwidthThrottlingLock lock];
-		// Handle throttling
-		if (globalThrottleWakeUpTime) {
-			if ([globalThrottleWakeUpTime timeIntervalSinceDate:[NSDate date]] > 0) {
-				if ([self readStreamIsScheduled]) {
-					[self unscheduleReadStream];
-					#if DEBUG_THROTTLING
-					ASI_DEBUG_LOG(@"[THROTTLING] Sleeping request %@ until after %@",self,throttleWakeUpTime);
-					#endif
-				}
-			} else {
-				if (![self readStreamIsScheduled]) {
-					[self scheduleReadStream];
-					#if DEBUG_THROTTLING
-					ASI_DEBUG_LOG(@"[THROTTLING] Waking up request %@",self);
-					#endif
-				}
-			}
-		} 
+        [self handleThrottlingForWakeUpTime:globalThrottleWakeUpTime];
 		[globalBandwidthThrottlingLock unlock];
 		
 	// Bandwidth throttling must have been turned off since we last looked, let's re-schedule the stream
@@ -4555,7 +4705,7 @@ static NSOperationQueue *sharedQueue = nil;
 		}
 	}
 	#if DEBUG_THROTTLING
-	ASI_DEBUG_LOG(@"[THROTTLING] ===Used: %u bytes of bandwidth in last measurement period===",bandwidthUsedInLastSecond);
+	ASI_DEBUG_LOG(@"[THROTTLING] ===Used: %lu bytes of bandwidth in last measurement period===",globalBandwidthUsedInLastSecond);
 	#endif
 	[globalBandwidthUsageTracker addObject:[NSNumber numberWithUnsignedLong:globalBandwidthUsedInLastSecond]];
 	[globalBandwidthMeasurementDate release];
@@ -4589,11 +4739,11 @@ static NSOperationQueue *sharedQueue = nil;
 	
 	// Are we performing bandwidth throttling?
 	if (
-	#if TARGET_OS_IPHONE
-	isGlobalBandwidthThrottled || (!shouldGlobalThrottleBandwidthForWWANOnly && (globalMaxBandwidthPerSecond))
-	#else
-	maxBandwidthPerSecond
-	#endif
+        #if TARGET_OS_IPHONE
+        isGlobalBandwidthThrottled || (!shouldGlobalThrottleBandwidthForWWANOnly && globalMaxBandwidthPerSecond)
+        #else
+        maxBandwidthPerSecond
+        #endif
 	) {
 		// How much data can we still send or receive this second?
 		long long bytesRemaining = (long long)globalMaxBandwidthPerSecond - (long long)globalBandwidthUsedInLastSecond;
@@ -4605,7 +4755,7 @@ static NSOperationQueue *sharedQueue = nil;
 			[globalThrottleWakeUpTime release];
 			globalThrottleWakeUpTime = [[NSDate alloc] initWithTimeInterval:extraSleepyTime sinceDate:globalBandwidthMeasurementDate];
 		}
-	}
+    }
 	[globalBandwidthThrottlingLock unlock];
 }
 	
@@ -4626,16 +4776,16 @@ static NSOperationQueue *sharedQueue = nil;
 		[globalThrottleWakeUpTime release];
 		globalThrottleWakeUpTime = [globalBandwidthMeasurementDate retain];
 	}
-	[globalBandwidthThrottlingLock unlock];	
+	[globalBandwidthThrottlingLock unlock];
 	return (unsigned long)toRead;
 }
 	
 
 #if TARGET_OS_IPHONE
-+ (void)setShouldThrottleBandwidthForWWAN:(BOOL)throttle
++ (void)setShouldThrottleGlobalBandwidthForWWAN:(BOOL)throttle
 {
 	if (throttle) {
-		[ASIHTTPRequest throttleBandwidthForWWANUsingLimit:ASIWWANBandwidthThrottleAmount];
+		[ASIHTTPRequest throttleGlobalBandwidthForWWANUsingLimit:ASIWWANBandwidthThrottleAmount];
 	} else {
 		[ASIHTTPRequest unsubscribeFromNetworkReachabilityNotifications];
 		[ASIHTTPRequest setMaxGlobalBandwidthPerSecond:0];
@@ -4646,7 +4796,7 @@ static NSOperationQueue *sharedQueue = nil;
 	}
 }
 
-+ (void)throttleBandwidthForWWANUsingLimit:(unsigned long)limit
++ (void)throttleGlobalBandwidthForWWANUsingLimit:(unsigned long)limit
 {	
 	[globalBandwidthThrottlingLock lock];
 	shouldGlobalThrottleBandwidthForWWANOnly = YES;
@@ -4681,7 +4831,27 @@ static NSOperationQueue *sharedQueue = nil;
 	isGlobalBandwidthThrottled = [ASIHTTPRequest isNetworkReachableViaWWAN];
 	[globalBandwidthThrottlingLock unlock];
 }
+
+
+#pragma mark request reachability
+
+- (void)registerRequestForNetworkReachabilityNotifications
+{
+	[[Reachability reachabilityForInternetConnection] startNotifier];
+	[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(requestReachabilityChanged:) name:kReachabilityChangedNotification object:nil];
+}
+
+- (void)unsubscribeRequestFromNetworkReachabilityNotifications
+{
+	[[NSNotificationCenter defaultCenter] removeObserver:self name:kReachabilityChangedNotification object:nil];
+}
+
+- (void)requestReachabilityChanged:(NSNotification *)note
+{
+	isRequestBandwidthThrottled = [ASIHTTPRequest isNetworkReachableViaWWAN];
+}
 #endif
+
 
 #pragma mark queue
 
@@ -5120,4 +5290,12 @@ static NSOperationQueue *sharedQueue = nil;
 @synthesize PACFileData;
 
 @synthesize isSynchronous;
+
+#if TARGET_OS_IPHONE
+@synthesize shouldThrottleBandwidthForWWANOnly = requestShouldThrottleBandwidthForWWANOnly;
+#endif
+@synthesize maxBandwidthPerSecond = requestMaxBandwidthPerSecond;
+@synthesize isBandwidthThrottled = isRequestBandwidthThrottled;
+@synthesize bandwidthUsedInLastSecond = requestBandwidthUsedInLastSecond;
+
 @end
